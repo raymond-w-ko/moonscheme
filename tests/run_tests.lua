@@ -1,8 +1,8 @@
-package.path = './?.lua'
+package.path = './?.lua;./?/init.lua'
 require('tests.strict')
 local util = require('tests.util')
 
-local moonscheme = require('moonscheme.base')
+local moonscheme = require('moonscheme')
 local InputStringPort = moonscheme.InputStringPort
 local OutputStringPort = moonscheme.OutputStringPort
 
@@ -57,7 +57,7 @@ local function serialize_check(text)
   local outport = OutputStringPort.new()
   moonscheme.write(data, outport)
   local serialized_text = outport:get_output_string() 
-  print(serialized_text)
+  -- print(serialized_text)
   assert(serialized_text == text)
 end
 
@@ -90,3 +90,24 @@ serialize_check([[(foo bar (fizz buzz))]])
 serialize_check([[(1 . 2)]])
 assert(moonscheme.car(read([[(1 . 2)]])) == 1)
 assert(moonscheme.cdr(read([[(1 . 2)]])) == 2)
+
+local function eval(text)
+  local data = read(text)
+  local ret = moonscheme.eval(data)
+  print(util.show(ret))
+  return ret
+end
+
+-- eval of empty list is an error
+-- eval([[()]])
+-- eval([[()]])
+-- eval([[(define)]])
+-- eval([[(define x)]])
+-- eval([[(define x 1 2)]])
+eval([[(define x 1)]])
+eval([[(define y math)]])
+eval([[(define z "foobar")]])
+eval([[(define a car)]])
+-- eval([[(quote)]])
+-- eval([[(quote 1 2)]])
+eval([[(car '(42 84 168))]])
