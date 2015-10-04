@@ -564,9 +564,7 @@ end
 local Environment = {}
 Environment.__index = Environment
 function Environment.new(level)
-  if level == nil then
-    level = 0
-  end
+  assert(type(level) == 'number')
 
   local t = {}
   t.symbols = {}
@@ -580,6 +578,23 @@ function Environment:extend_with(symbols)
     local symbol = symbols[i]
     assert(getmetatable(symbol) == Symbol)
     newenv.symbols[tostring(symbol)] = true
+  end
+  return newenv
+end
+function Environment:add_symbols_to_same_level(symbols)
+  local newenv = Environment.new(self.level)
+  newenv.parent = self.parent
+  -- deppcopy symbols from older environment
+  for symbol_name, v in pairs(self.symbols) do
+    newenv.symbols[symbol_name] = true
+  end
+  for i = 1, #symbols do
+    local symbol = symbols[i]
+    assert(getmetatable(symbol) == Symbol)
+    local name = tostring(symbol)
+    assert(newenv.symbols[name] == nil,
+           "Environment: duplicate symbol being defined: " .. name)
+    newenv.symbols[name] = true
   end
   return newenv
 end
@@ -681,10 +696,11 @@ local ir_compilers = {}
 
 -- list to IR code
 local function transform_to_ir_list(expr)
-  local base_env = Environment.new()
+  local base_env = Environment.new(0)
   base_env.symbols = current_module
-  local list = new_node('LISP', {expr}, base_env)
-  local dirty_nodes = {list}
+  local ir_list = new_node('LISP', {expr}, base_env)
+  ir_list.ret = true
+  local dirty_nodes = {ir_list}
 
   while #dirty_nodes > 0 do
     local new_dirty_nodes = {}
@@ -699,10 +715,10 @@ local function transform_to_ir_list(expr)
 
   -- definitely possible that IR compilation create new nodes before the
   -- original single node
-  while list.prev do
-    list = list.prev
+  while ir_list.prev do
+    ir_list = ir_list.prev
   end
-  return list
+  return ir_list
 end
 
 local special_form_compilers = {}
@@ -756,7 +772,7 @@ ir_compilers['LISP'] = function(node, new_dirty_nodes)
       node.env = node.env:extend_with({fn_get_sym})
     else
       print(util.show(lisp))
-      assert(false, "unrecognized (operator ...) type")
+      error("unrecognized (operator ...) type")
     end
 
     while args ~= EMPTY_LIST do
@@ -787,12 +803,17 @@ ir_compilers['LISP'] = function(node, new_dirty_nodes)
 end
 
 special_form_compilers['define'] = function(node, new_dirty_nodes)
-  local args = to_lua_array(node.args)
+  local orignode = node
+  local args = to_lua_array(orignode.args)
   if #args < 1 then
     error("define: bad syntax (called with no arguments)")
   end
 
+  local node = new_node('DUMMY', {}, orignode.env)
+  insert_before(orignode, node)
+
   local variable = args[1]
+  local variable_symbol
   -- deduce variable type, of which there can be 3 possibilities
   local mt = getmetatable(variable)
   if mt == Symbol then
@@ -817,18 +838,25 @@ special_form_compilers['define'] = function(node, new_dirty_nodes)
     else
       node.new_local = tostring(variable)
     end
+    variable_symbol = variable
   elseif mt == Pair then
     local proc_name = car(variable)
+    variable_symbol = proc_name
     local proc_args = cdr(variable)
     local mt = getmetatable(proc_args)
     if mt == Pair then
-      -- 2. define a new named function with normal arguments
+      -- 2. define a new named function with normal arguments, i.e. start of
+      -- argument list
     elseif mt == Symbol then
       -- 3. define a new named function with arguments packed to a list
     end
   else
     error("define: bad syntax (unknown first argument type)")
   end
+
+  orignode.env = orignode.env:add_symbols_to_same_level({variable_symbol})
+  orignode.op = 'SYMBOL'
+  orignode.args = {variable_symbol}
 end
 
 special_form_compilers["quote"] = function(node, new_dirty_nodes)
@@ -907,6 +935,8 @@ local function transform_to_lua(ir_list)
     elseif node.set_var then
       insert(node.set_var)
       insert(" = ")
+    elseif node.ret then
+      insert("return ")
     end
 
     if op == 'PRIMITIVE' then
@@ -961,7 +991,7 @@ local function eval(expr)
   if fn == nil then
     assert(false, err)
   end
-  fn()
+  return fn()
 end
 M.eval = eval
 

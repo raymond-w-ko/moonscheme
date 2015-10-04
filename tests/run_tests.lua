@@ -100,10 +100,15 @@ end
 
 -- eval of empty list is an error
 -- eval([[()]])
--- eval([[()]])
+
+-- (define) wrong arity (!= 2)
 -- eval([[(define)]])
 -- eval([[(define x)]])
 -- eval([[(define x 1 2)]])
+
+-- (define) on existing top-level symbol, duplicated
+-- eval([[(define car 1234)]])
+
 eval([[(define x 1)]])
 eval([[(define y math)]])
 eval([[(define z "foobar")]])
