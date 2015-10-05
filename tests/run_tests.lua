@@ -92,10 +92,16 @@ assert(moonscheme.car(read([[(1 . 2)]])) == 1)
 assert(moonscheme.cdr(read([[(1 . 2)]])) == 2)
 
 local function eval(text)
-  local data = read(text)
-  local ret = moonscheme.eval(data)
-  print(util.show(ret))
-  return ret
+  print(text)
+  local port = InputStringPort.new(text)
+  local data = moonscheme.read(port)
+  while data ~= moonscheme.EOF do
+    local ret = moonscheme.eval(data)
+    local out_port = moonscheme.stdout_port
+    moonscheme.write(ret, out_port)
+    print("\n----------------------------------------")
+    data = moonscheme.read(port)
+  end
 end
 
 -- eval of empty list is an error
@@ -110,9 +116,41 @@ end
 -- eval([[(define car 1234)]])
 
 eval([[(define x 1)]])
-eval([[(define y math)]])
+-- eval([[(define y math)]])
 eval([[(define z "foobar")]])
 eval([[(define a car)]])
 -- eval([[(quote)]])
 -- eval([[(quote 1 2)]])
 eval([[(car '(42 84 168))]])
+
+-- eval([[(lambda)]])
+-- eval([[(lambda 42 42)]])
+-- eval([[(lambda (x y z))]])
+-- eval([[(lambda (x y z . w))]])
+
+eval([[(lambda () 42)]])
+eval([[(lambda (x) (car x))]])
+eval([[(lambda (x y z) (car y))]])
+eval([[
+(lambda (x y z . w)
+  (write x)
+  (write w))]])
+-- eval([[(lambda packed)]])
+
+
+eval([[
+
+(define (foo x y)
+  42)
+(define (bar x)
+  (assert #f))
+(define (quux)
+  (assert #f))
+(define (colbert . stewart)
+  (write stewart))
+(define (test1 arg0 arg1 . stewart)
+  (write stewart)
+  (test1 (car stewart)))
+;(bar 1)
+(colbert 1 2 3)
+]])

@@ -170,6 +170,23 @@ local function to_lua_array(list)
   return arr
 end
 
+function M.to_scheme_list(packed_array)
+  local n = packed_array.n
+  local list = EMPTY_LIST
+  local p
+  for i = 1, n do
+    if list == EMPTY_LIST then
+      list = cons(packed_array[i], EMPTY_LIST)
+      p = list
+    else
+      local nextobj = cons(packed_array[i], EMPTY_LIST)
+      set_cdr(p, nextobj)
+      p = nextobj
+    end
+  end
+  return list
+end
+
 --------------------------------------------------------------------------------
 -- reader
 --------------------------------------------------------------------------------
@@ -288,7 +305,7 @@ local function interpret_identifier(identifier)
   return Symbol.new(identifier)
 end
 
-local function read(port)
+local function read(port, is_recursive)
   -- lazy hack since I don't feel like over complicating generated source code
   if type(port) == 'string' then
     port = InputStringPort.new(port)
@@ -300,7 +317,11 @@ local function read(port)
     end
 
     if ch == EOF then
-      error('EOF while reading')
+      if is_recursive then
+        error('EOF while reading')
+      else
+        return EOF
+      end
     end
 
     if digits[ch] then
@@ -395,15 +416,12 @@ macros['('] = function(port, initial_ch)
       port:read_char()
       break
     else
-      local obj = read(port)
+      local obj = read(port, true)
       if obj == kDotSymbol then
         assert(list ~= EMPTY_LIST, "read: illegal use of '.'")
-        local cdr_obj = read(port)
+        local cdr_obj = read(port, true)
         set_cdr(p, cdr_obj)
-        return list
-      end
-
-      if list == EMPTY_LIST then
+      elseif list == EMPTY_LIST then
         list = cons(obj, EMPTY_LIST)
         p = list
       else
@@ -419,8 +437,15 @@ end
 local kQuoteSymbol = Symbol.new('quote')
 macros["'"] = function(port, initial_ch)
   local list = cons(kQuoteSymbol, EMPTY_LIST)
-  set_cdr(list, cons(read(port), EMPTY_LIST))
+  set_cdr(list, cons(read(port, true), EMPTY_LIST))
   return list
+end
+
+macros[";"] = function(port, initial_ch)
+  while port:peek_char() ~= "\n" do
+    port:read_char()
+  end
+  return port
 end
 
 local dispatch_macros = {}
@@ -458,6 +483,9 @@ local function write(obj, port)
   elseif obj == EMPTY_LIST then
     port:write_string('()')
     return
+  elseif obj == nil then
+    port:write_string('nil')
+    return
   end
 
   local objtype = type(obj)
@@ -465,6 +493,9 @@ local function write(obj, port)
     write_quoted_string(obj, port)
     return
   elseif objtype == 'number' then
+    port:write_string(tostring(obj))
+    return
+  elseif objtype == 'function' then
     port:write_string(tostring(obj))
     return
   end
@@ -523,12 +554,14 @@ for i = string.byte('a'), string.byte('z') do
 end
 scheme_identifier_map['_'] = '_'
 scheme_identifier_map['-'] = '_HYPHEN_'
+scheme_identifier_map['.'] = '_DOT_'
 local function to_lua_identifier(scheme_identifier)
   local buf = {nil, nil, nil, nil, nil, nil, nil, nil}; local nextslot = 1
   local n = scheme_identifier:len()
   for i = 1, n do
-    local ch = scheme_identifier_map[scheme_identifier:sub(i, i)]
-    assert(ch, 'missing mapping in scheme_identifier_map')
+    local origch = scheme_identifier:sub(i, i)
+    local ch = scheme_identifier_map[origch]
+    assert(ch, 'missing mapping in scheme_identifier_map: ' .. origch)
     buf[nextslot] = ch; nextslot = nextslot + 1
   end
   return table.concat(buf)
@@ -760,16 +793,16 @@ ir_compilers['LISP'] = function(node, new_dirty_nodes)
     elseif mt == Pair then
       -- the operator of the function call needs to be evaluated, like
       -- ((lambda (x) (+ x 1) 2)
-      local fn_get_name = genvar("operator")
-      local fn_get_sym = Symbol.new(fn_get_name)
+      local fn_get_sym = Symbol.new(genvar("operator"))
       table.insert(call_args, fn_get_sym)
 
       local fn_get_node = new_node('LISP', {proc}, node.env)
-      fn_get_name.new_local = fn_get_name
+      fn_get_node.new_local = fn_get_sym
       insert_before(node, fn_get_node)
       table.insert(new_dirty_nodes, fn_get_node)
 
       node.env = node.env:extend_with({fn_get_sym})
+      fn_get_node.env = node.env
     else
       print(util.show(lisp))
       error("unrecognized (operator ...) type")
@@ -778,16 +811,16 @@ ir_compilers['LISP'] = function(node, new_dirty_nodes)
     while args ~= EMPTY_LIST do
       local arg = car(args)
       if getmetatable(arg) == Pair then
-        local var_get_name = genvar("call_arg")
-        local var_get_sym = Symbol.new(var_get_name)
+        local var_get_sym = Symbol.new(genvar("call_arg"))
         table.insert(call_args, var_get_sym)
 
         local var_get_node = new_node('LISP', {arg}, node.env)
-        var_get_node.new_local = var_get_name
+        var_get_node.new_local = var_get_sym
         insert_before(node, var_get_node)
         table.insert(new_dirty_nodes, var_get_node)
 
         node.env = node.env:extend_with({var_get_sym})
+        var_get_node.env = node.env
       else
         table.insert(call_args, arg)
       end
@@ -823,6 +856,7 @@ special_form_compilers['define'] = function(node, new_dirty_nodes)
     elseif #args >= 3 then
       error("define: bad syntax, (multiple expressions after identifier)")
     end
+    variable_symbol = variable
     local expr = args[2]
     if IsLuaPrimitive(expr) then
       node.op = 'PRIMITIVE'
@@ -834,22 +868,31 @@ special_form_compilers['define'] = function(node, new_dirty_nodes)
     end
 
     if node.env:is_top_level() then
-      node.set_var = kModuleLocal .. '.' .. tostring(variable)
+      node.set_var = variable_symbol
+      node.env = node.env:add_symbols_to_same_level({variable_symbol})
     else
-      node.new_local = tostring(variable)
+      node.new_local = variable_symbol
+      node.env = node.env:extend_with({variable_symbol})
     end
-    variable_symbol = variable
   elseif mt == Pair then
+    -- we just transform this to lambda with the variable introduced by this
+    -- defined into the scope
     local proc_name = car(variable)
-    variable_symbol = proc_name
     local proc_args = cdr(variable)
-    local mt = getmetatable(proc_args)
-    if mt == Pair then
-      -- 2. define a new named function with normal arguments, i.e. start of
-      -- argument list
-    elseif mt == Symbol then
-      -- 3. define a new named function with arguments packed to a list
+    variable_symbol = proc_name
+    local env = node.env
+    if env:is_top_level() then
+      node.set_var = variable_symbol
+      node.env = env:add_symbols_to_same_level({variable_symbol})
+    else
+      node.new_local = variable_symbol
+      node.env = env:extend_with({variable_symbol})
     end
+    local lambda_args = cons(proc_args, cdr(orignode.args))
+    M.write(lambda_args)
+    local lambda_compiler = special_form_compilers["lambda"]
+    node.args = lambda_args
+    lambda_compiler(node, new_dirty_nodes)
   else
     error("define: bad syntax (unknown first argument type)")
   end
@@ -857,6 +900,89 @@ special_form_compilers['define'] = function(node, new_dirty_nodes)
   orignode.env = orignode.env:add_symbols_to_same_level({variable_symbol})
   orignode.op = 'SYMBOL'
   orignode.args = {variable_symbol}
+end
+
+local kTripDotSymbol = Symbol.new("...")
+
+special_form_compilers["lambda"] = function(node, new_dirty_nodes)
+  local args = node.args
+  if args == EMPTY_LIST then
+    error("lambda: bad syntax (missing identifiers and expressions)")
+  end
+
+  local proc_args = car(args)
+
+  local func_args
+  local pack_args = false
+  local packed_args_sym
+
+  local mt = getmetatable(proc_args)
+  if mt == Symbol then
+    pack_args = true
+    packed_args_sym = proc_args
+    func_args = {kTripDotSymbol}
+  elseif mt == Pair then
+    -- this can also include packed args at the end!!
+    func_args = {}
+    while true do
+      local arg = car(proc_args)
+      table.insert(func_args, arg)
+      local nextobj = cdr(proc_args)
+      if getmetatable(nextobj) == Symbol then
+        -- dotted argument detected, pack the rest
+        table.insert(func_args, kTripDotSymbol)
+        pack_args = true
+        packed_args_sym = nextobj
+        break
+      else
+        proc_args = nextobj
+        if proc_args == EMPTY_LIST then
+          break
+        end
+      end
+    end
+  elseif proc_args == EMPTY_LIST then
+    func_args = {}
+  else
+    error("lambda: bad argument sequence")
+  end
+  assert(func_args)
+
+  node.op = "BEGINFUNC"
+  node.args = func_args
+
+  local func_env = node.env:extend_with(func_args)
+  node.env = func_env
+  if pack_args then
+    local env = node.env:extend_with({packed_args_sym})
+    local pack_args_node = new_node('PACKARGS', {}, env)
+    pack_args_node.new_local = packed_args_sym
+    insert_after(node, pack_args_node)
+    node = pack_args_node
+  end
+  local func_env = node.env:extend_with(func_args)
+
+  -- TODO: the body of a lambda has to be a (letrec*) in case of (define)s
+  -- inside, right now this is just a (let*)
+  local proc_bodies = cdr(args)
+  if proc_bodies == EMPTY_LIST then
+    error("lambda: bad syntax (missing body expressions)")
+  end
+  proc_bodies = to_lua_array(proc_bodies)
+  local n = #proc_bodies
+  for i = 1, n do
+    local body_node = new_node('LISP', {proc_bodies[i]}, func_env)
+    table.insert(new_dirty_nodes, body_node)
+    if i == n then
+      body_node.ret = true
+    end
+    insert_after(node, body_node)
+    node = body_node
+  end
+
+  local endfunc_node = new_node("ENDFUNC", {}, func_env)
+  insert_after(node, endfunc_node)
+  node = endfunc_node
 end
 
 special_form_compilers["quote"] = function(node, new_dirty_nodes)
@@ -888,6 +1014,7 @@ local function compile_lua_primitive(obj)
 end
 
 local function transform_to_lua(ir_list)
+  local indent = 0
   local lua_code = {}
   local function insert(text)
     table.insert(lua_code, text)
@@ -928,12 +1055,22 @@ local function transform_to_lua(ir_list)
     local env = node.env
     local args = node.args
 
+    if op == "ENDFUNC" then
+      indent = indent - 1
+    end
+
+    for i = 1, indent do
+      table.insert(lua_code, "    ")
+    end
+
     if node.new_local then
+      assert(getmetatable(node.new_local) == Symbol)
       insert("local ")
-      insert(node.new_local)
+      insert(env:mangle_symbol(node.new_local))
       insert(" = ")
     elseif node.set_var then
-      insert(node.set_var)
+      assert(getmetatable(node.set_var) == Symbol)
+      insert(env:mangle_symbol(node.set_var))
       insert(" = ")
     elseif node.ret then
       insert("return ")
@@ -964,6 +1101,27 @@ local function transform_to_lua(ir_list)
           insert(", ")
         end
       end
+    elseif op == 'BEGINFUNC' then
+      insert("function(")
+      local n = #args
+      for i = 1, n do
+        local symbol = args[i]
+        if tostring(symbol) == "..." then
+          insert("...")
+        else
+          insert(env:mangle_symbol(symbol))
+        end
+        if i ~= n then
+          insert(", ")
+        end
+      end
+      insert(")")
+      indent = indent + 1
+    elseif op == 'PACKARGS' then
+      insert(kMoonSchemeLocal)
+      insert(".to_scheme_list(table.pack(...))")
+    elseif op == 'ENDFUNC' then
+      insert("end")
     else
       error("unknown opcode type in Lua generation: " .. op)
     end
@@ -984,10 +1142,33 @@ end
 
 local out = io.open('compiler_output.lua', 'wb')
 
+local kDefineSymbol = Symbol.new("define")
 local function eval(expr)
   local lua_code = compile(expr)
+
+  -- extract defines to give functions names
+  local description
+  if getmetatable(expr) == Pair then
+    local arg0 = car(expr)
+    if arg0 == kDefineSymbol then
+      local arg1 = car(cdr(expr))
+      if getmetatable(arg1) == Pair then
+        description = current_module_name .. '/' .. tostring(car(arg1))
+      elseif getmetatable(arg1) == Symbol then
+        description = current_module_name .. '/' .. tostring(arg1)
+      end
+    end
+  end
+
+  -- debug
+  if description then
+    out:write("-- ")
+    out:write(description)
+    out:write("\n")
+  end
   out:write(lua_code)
-  local fn, err = load(lua_code)
+
+  local fn, err = load(lua_code, description)
   if fn == nil then
     assert(false, err)
   end
