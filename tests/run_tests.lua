@@ -139,7 +139,6 @@ eval([[
 
 
 eval([[
-
 (define (foo x y)
   42)
 (define (bar x)
@@ -153,4 +152,28 @@ eval([[
   (test1 (car stewart)))
 ;(bar 1)
 (colbert 1 2 3)
+]])
+eval([[
+; (if)
+; (if #t)
+(if #t
+  1)
+(if #f
+  1)
+(if #t
+  1
+  2)
+(if #f
+  1
+  2)
+(if nil
+  "yes, nil is true!"
+  2)
+((lambda (x)
+   (if nil
+     "yes, nil is true!"
+     2)
+   (if #f
+     "yes, nil is true!"
+     2)) 5)
 ]])

@@ -96,3 +96,76 @@ local __MODULE = require("moonscheme.base")
 local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
 return __MODULE["colbert"](1, 2, 3)
 ----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __if_test_3 = true
+local __if_ret_4 = nil
+if __if_test_3 ~= false then
+    __if_ret_4 = 1
+end
+return __if_ret_4
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __if_test_5 = false
+local __if_ret_6 = nil
+if __if_test_5 ~= false then
+    __if_ret_6 = 1
+end
+return __if_ret_6
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __if_test_7 = true
+local __if_ret_8 = nil
+if __if_test_7 ~= false then
+    __if_ret_8 = 1
+else
+    __if_ret_8 = 2
+end
+return __if_ret_8
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __if_test_9 = false
+local __if_ret_10 = nil
+if __if_test_9 ~= false then
+    __if_ret_10 = 1
+else
+    __if_ret_10 = 2
+end
+return __if_ret_10
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __if_test_11 = nil
+local __if_ret_12 = nil
+if __if_test_11 ~= false then
+    __if_ret_12 = "yes, nil is true!"
+else
+    __if_ret_12 = 2
+end
+return __if_ret_12
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __operator_13 = function(x)
+    local __if_test_14 = nil
+    local __if_ret_15 = nil
+    if __if_test_14 ~= false then
+        __if_ret_15 = "yes, nil is true!"
+    else
+        __if_ret_15 = 2
+    end
+    
+    local __if_test_16 = false
+    local __if_ret_17 = nil
+    if __if_test_16 ~= false then
+        __if_ret_17 = "yes, nil is true!"
+    else
+        __if_ret_17 = 2
+    end
+    return __if_ret_17
+end
+return __operator_13(5)
+----------------------------------------

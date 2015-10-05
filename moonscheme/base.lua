@@ -648,6 +648,11 @@ function Environment:has_symbol(symbol)
 end
 function Environment:mangle_symbol(symbol)
   assert(getmetatable(symbol) == Symbol)
+  local name = tostring(symbol)
+  if name == "..." or name == "nil" then
+    return name
+  end
+
   local buf = {nil, nil, nil}; local nextslot = 1
 
   local symbol_level = self:has_symbol(symbol)
@@ -659,7 +664,6 @@ function Environment:mangle_symbol(symbol)
     buf[nextslot] = '["'; nextslot = nextslot + 1
   end
 
-  local name = tostring(symbol)
   if symbol_level and symbol_level > 0 then
     buf[nextslot] = to_lua_identifier(symbol.name); nextslot = nextslot + 1
   else
@@ -889,7 +893,6 @@ special_form_compilers['define'] = function(node, new_dirty_nodes)
       node.env = env:extend_with({variable_symbol})
     end
     local lambda_args = cons(proc_args, cdr(orignode.args))
-    M.write(lambda_args)
     local lambda_compiler = special_form_compilers["lambda"]
     node.args = lambda_args
     lambda_compiler(node, new_dirty_nodes)
@@ -997,6 +1000,69 @@ special_form_compilers["quote"] = function(node, new_dirty_nodes)
   node.args = {serialized_data}
 end
 
+special_form_compilers["if"] = function(node, new_dirty_nodes)
+  local args = node.args
+  if args == EMPTY_LIST then
+    error("if: bad syntax (has 0 parts after keyword)")
+  end
+  local test = car(args)
+  args = cdr(args)
+  local consequent
+  local alternate
+  if args ~= EMPTY_LIST then
+    consequent = car(args)
+    args = cdr(args)
+    if args ~= EMPTY_LIST then
+      alternate = car(args)
+    end
+  else
+    error("if: bad syntax (has only 1 part after keyword)")
+  end
+
+  local env = node.env
+
+  -- handle the if test
+  local test_ret_sym = Symbol.new(genvar("if_test"))
+  env = env:extend_with({test_ret_sym})
+  local test_node = new_node('LISP', {test}, env)
+  test_node.new_local = test_ret_sym
+  insert_before(node, test_node)
+  table.insert(new_dirty_nodes, test_node)
+
+  -- create a variable to store the value of the if expression, which is
+  -- complicated since we don't want to create a lambda as that hampers JIT
+  local if_ret_sym = Symbol.new(genvar("if_ret"))
+  env = env:extend_with({if_ret_sym})
+  local if_ret_node = new_node('PRIMITIVE', {nil}, env)
+  if_ret_node.new_local = if_ret_sym
+  insert_before(node, if_ret_node)
+
+  local if_node = new_node('IF', {test_ret_sym}, env)
+  insert_before(node, if_node)
+
+  local consequent_node = new_node("LISP", {consequent}, env)
+  consequent_node.set_var = if_ret_sym
+  table.insert(new_dirty_nodes, consequent_node)
+  insert_before(node, consequent_node)
+
+  if alternate then
+    local else_node = new_node('ELSE', {}, env)
+    insert_before(node, else_node)
+
+    local alternate_node = new_node("LISP", {alternate}, env)
+    alternate_node.set_var = if_ret_sym
+    table.insert(new_dirty_nodes, alternate_node)
+    insert_before(node, alternate_node)
+  end
+
+  local endif_node = new_node('ENDIF', {}, env)
+  insert_before(node, endif_node)
+
+  node.op = 'SYMBOL'
+  node.args = {if_ret_sym}
+  node.env = env
+end
+
 local function compile_lua_primitive(obj)
   if type(obj) == 'string' then
     return string.format("%q", obj)
@@ -1011,6 +1077,14 @@ local function compile_lua_primitive(obj)
   else
     assert(false)
   end
+end
+
+-- Lua does not allow standalone values that aren't being bound to anything
+local function is_rvalue(node)
+  if node.set_var or node.new_local or node.ret then
+    return true
+  end
+  return false
 end
 
 local function transform_to_lua(ir_list)
@@ -1055,7 +1129,7 @@ local function transform_to_lua(ir_list)
     local env = node.env
     local args = node.args
 
-    if op == "ENDFUNC" then
+    if op == "ENDFUNC" or op == "ENDIF" or op == "ELSE" then
       indent = indent - 1
     end
 
@@ -1077,13 +1151,19 @@ local function transform_to_lua(ir_list)
     end
 
     if op == 'PRIMITIVE' then
-      local obj = node.args[1]
-      insert(compile_lua_primitive(obj))
+      if is_rvalue(node) then
+        local obj = node.args[1]
+        insert(compile_lua_primitive(obj))
+      end
     elseif op == 'SYMBOL' then
-      local symbol = node.args[1]
-      insert(env:mangle_symbol(symbol))
-    elseif op == 'DATA' then
-      insert(args[1])
+      if is_rvalue(node) then
+        local symbol = node.args[1]
+        insert(env:mangle_symbol(symbol))
+      end
+    elseif op == 'DATA'then
+      if is_rvalue(node) then
+        insert(args[1])
+      end
     elseif op == 'CALL' then
       for i = 1, #args do
         local arg = args[i]
@@ -1106,11 +1186,7 @@ local function transform_to_lua(ir_list)
       local n = #args
       for i = 1, n do
         local symbol = args[i]
-        if tostring(symbol) == "..." then
-          insert("...")
-        else
-          insert(env:mangle_symbol(symbol))
-        end
+        insert(env:mangle_symbol(symbol))
         if i ~= n then
           insert(", ")
         end
@@ -1121,6 +1197,16 @@ local function transform_to_lua(ir_list)
       insert(kMoonSchemeLocal)
       insert(".to_scheme_list(table.pack(...))")
     elseif op == 'ENDFUNC' then
+      insert("end")
+    elseif op == 'IF' then
+      insert("if ")
+      insert(env:mangle_symbol(args[1]))
+      insert(" ~= false then")
+      indent = indent + 1
+    elseif op == 'ELSE' then
+      insert("else")
+      indent = indent + 1
+    elseif op == 'ENDIF' then
       insert("end")
     else
       error("unknown opcode type in Lua generation: " .. op)
