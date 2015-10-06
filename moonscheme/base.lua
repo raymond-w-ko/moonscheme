@@ -1148,7 +1148,64 @@ special_form_compilers["let"] = function(node, new_dirty_nodes)
 end
 
 special_form_compilers["let*"] = function(node, new_dirty_nodes)
-  assert(false)
+  local args = node.args
+  if args == EMPTY_LIST then
+    error("let: bad syntax (missing name or binding pairs)")
+  end
+
+  local bindings = car(args)
+  args = cdr(args)
+  local bodies = args
+
+  assert(getmetatable(bindings) == Pair,
+         "let*: bad syntax (not a sequence of identifier--expression bindings)")
+
+  local env = node.env
+
+  local let_ret_sym = genvar("let_ret")
+  env = env:extend_with({let_ret_sym})
+  local let_ret_node = new_node("PRIMITIVE", {nil}, env)
+  insert_before(node, let_ret_node)
+  let_ret_node.new_local = let_ret_sym
+
+  local memfence_node = new_node("VARFENCE", {}, env)
+  insert_before(node, memfence_node)
+
+  while bindings ~= EMPTY_LIST do
+    local binding = car(bindings)
+    assert(getmetatable(binding) == Pair)
+    local variable = car(binding)
+    assert(getmetatable(variable) == Symbol,
+           "let: bad syntax (variable not an identifier)")
+    binding = cdr(binding)
+    local init = car(binding)
+    bindings = cdr(bindings)
+
+    local binding_node = new_node("LISP", {init}, env)
+    binding_node.new_local = variable
+    insert_before(node, binding_node)
+    table.insert(new_dirty_nodes, binding_node)
+    env = env:extend_with({variable})
+    binding_node.env = env
+  end
+
+  while bodies ~= EMPTY_LIST do
+    local body = car(bodies)
+    local body_node = new_node("LISP", {body}, env)
+    insert_before(node, body_node)
+    table.insert(new_dirty_nodes, body_node)
+    bodies = cdr(bodies)
+    if bodies == EMPTY_LIST then
+      body_node.set_var = let_ret_sym
+    end
+  end
+
+  local endmemfence_node = new_node("ENDVARFENCE", {}, env)
+  insert_before(node, endmemfence_node)
+
+  node.op = 'SYMBOL'
+  node.args = {let_ret_sym}
+  node.env = env
 end
 
 special_form_compilers["letrec"] = function(node, new_dirty_nodes)

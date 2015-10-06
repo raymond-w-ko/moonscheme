@@ -218,3 +218,23 @@ do
 end
 return __let_ret_27
 ----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __let_ret_30 = nil
+do
+    local x = 1
+    local y = 1
+    __let_ret_30 = x
+end
+return __let_ret_30
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __let_ret_31 = nil
+do
+    local x = 1
+    local y = 1
+    __let_ret_31 = __MODULE["foo"]()
+end
+return __let_ret_31
+----------------------------------------
