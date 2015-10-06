@@ -169,3 +169,52 @@ local __operator_13 = function(x)
 end
 return __operator_13(5)
 ----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __if_test_18 = true
+local __if_ret_19 = nil
+if __if_test_18 ~= false then
+    local __if_test_20 = true
+    local __if_ret_21 = nil
+    if __if_test_20 ~= false then
+        __if_ret_21 = 1
+    else
+        __if_ret_21 = 2
+    end
+    __if_ret_19 = __if_ret_21
+else
+    local __if_test_22 = false
+    local __if_ret_23 = nil
+    if __if_test_22 ~= false then
+        __if_ret_23 = 3
+    else
+        __if_ret_23 = 4
+    end
+    __if_ret_19 = __if_ret_23
+end
+return __if_ret_19
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __let_ret_24 = nil
+do
+    local __let_var_25 = 1
+    local __let_var_26 = 1
+    local x = __let_var_25
+    local y = __let_var_26
+    __let_ret_24 = x
+end
+return __let_ret_24
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __let_ret_27 = nil
+do
+    local __let_var_28 = 1
+    local __let_var_29 = 1
+    local x = __let_var_28
+    local y = __let_var_29
+    __let_ret_27 = __MODULE["foo"]()
+end
+return __let_ret_27
+----------------------------------------

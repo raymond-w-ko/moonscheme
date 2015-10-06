@@ -176,4 +176,18 @@ eval([[
    (if #f
      "yes, nil is true!"
      2)) 5)
+(if #t
+  (if #t 1 2)
+  (if #f 3 4))
+]])
+eval([[
+;(let foo ((x 1)
+;      (y 1))
+;  (foo))
+(let ((x 1)
+      (y 1))
+  x)
+(let ((x 1)
+      (y 1))
+  (foo))
 ]])

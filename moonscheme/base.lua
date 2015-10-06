@@ -579,7 +579,7 @@ local function genvar(info)
   buf[nextslot] = '_'; nextslot = nextslot + 1
   buf[nextslot] = tostring(_genvar_count); nextslot = nextslot + 1
   _genvar_count = _genvar_count + 1
-  return table.concat(buf)
+  return Symbol.new(table.concat(buf))
 end
 
 local kModuleLocal = '__MODULE'
@@ -797,7 +797,7 @@ ir_compilers['LISP'] = function(node, new_dirty_nodes)
     elseif mt == Pair then
       -- the operator of the function call needs to be evaluated, like
       -- ((lambda (x) (+ x 1) 2)
-      local fn_get_sym = Symbol.new(genvar("operator"))
+      local fn_get_sym = genvar("operator")
       table.insert(call_args, fn_get_sym)
 
       local fn_get_node = new_node('LISP', {proc}, node.env)
@@ -815,7 +815,7 @@ ir_compilers['LISP'] = function(node, new_dirty_nodes)
     while args ~= EMPTY_LIST do
       local arg = car(args)
       if getmetatable(arg) == Pair then
-        local var_get_sym = Symbol.new(genvar("call_arg"))
+        local var_get_sym = genvar("call_arg")
         table.insert(call_args, var_get_sym)
 
         local var_get_node = new_node('LISP', {arg}, node.env)
@@ -951,7 +951,7 @@ special_form_compilers["lambda"] = function(node, new_dirty_nodes)
   end
   assert(func_args)
 
-  node.op = "BEGINFUNC"
+  node.op = "FUNC"
   node.args = func_args
 
   local func_env = node.env:extend_with(func_args)
@@ -1022,7 +1022,7 @@ special_form_compilers["if"] = function(node, new_dirty_nodes)
   local env = node.env
 
   -- handle the if test
-  local test_ret_sym = Symbol.new(genvar("if_test"))
+  local test_ret_sym = genvar("if_test")
   env = env:extend_with({test_ret_sym})
   local test_node = new_node('LISP', {test}, env)
   test_node.new_local = test_ret_sym
@@ -1031,7 +1031,7 @@ special_form_compilers["if"] = function(node, new_dirty_nodes)
 
   -- create a variable to store the value of the if expression, which is
   -- complicated since we don't want to create a lambda as that hampers JIT
-  local if_ret_sym = Symbol.new(genvar("if_ret"))
+  local if_ret_sym = genvar("if_ret")
   env = env:extend_with({if_ret_sym})
   local if_ret_node = new_node('PRIMITIVE', {nil}, env)
   if_ret_node.new_local = if_ret_sym
@@ -1062,6 +1062,103 @@ special_form_compilers["if"] = function(node, new_dirty_nodes)
   node.args = {if_ret_sym}
   node.env = env
 end
+
+special_form_compilers["let"] = function(node, new_dirty_nodes)
+  local args = node.args
+  if args == EMPTY_LIST then
+    error("let: bad syntax (missing name or binding pairs)")
+  end
+
+  local bindings = car(args)
+  args = cdr(args)
+  local bodies = args
+
+  if getmetatable(bindings) == Symbol then
+    error("TODO: supported named let")
+  end
+
+  assert(getmetatable(bindings) == Pair,
+         "let: bad syntax (bindings not a list)")
+
+  local local_map = {}
+  local new_vars = {}
+  local seen_variables = {}
+
+  local env = node.env
+
+  local let_ret_sym = genvar("let_ret")
+  env = env:extend_with({let_ret_sym})
+  local let_ret_node = new_node("PRIMITIVE", {nil}, env)
+  insert_before(node, let_ret_node)
+  let_ret_node.new_local = let_ret_sym
+
+  local memfence_node = new_node("VARFENCE", {}, env)
+  insert_before(node, memfence_node)
+
+  while bindings ~= EMPTY_LIST do
+    local binding = car(bindings)
+    assert(getmetatable(binding) == Pair)
+    local variable = car(binding)
+    assert(getmetatable(variable) == Symbol,
+           "let: bad syntax (variable not an identifier)")
+    binding = cdr(binding)
+    local init = car(binding)
+    bindings = cdr(bindings)
+
+    local name = tostring(variable)
+    assert(seen_variables[name] == nil, "let: duplicate identifier: " .. name)
+    seen_variables[name] = true
+
+    local tmp_var_sym = genvar("let_var")
+    local tmp_var_node = new_node("LISP", {init}, env)
+    tmp_var_node.new_local = tmp_var_sym
+    insert_before(node, tmp_var_node)
+    table.insert(new_dirty_nodes, tmp_var_node)
+    env = env:extend_with({tmp_var_sym})
+    tmp_var_node.env = env
+
+    table.insert(local_map, {variable, tmp_var_sym})
+    table.insert(new_vars, variable)
+  end
+
+  env = env:extend_with(new_vars)
+  for i, m in ipairs(local_map) do
+    local local_assign_node = new_node('SYMBOL', {m[2]}, env)
+    local_assign_node.new_local = m[1]
+    insert_before(node, local_assign_node)
+  end
+
+  while bodies ~= EMPTY_LIST do
+    local body = car(bodies)
+    local body_node = new_node("LISP", {body}, env)
+    insert_before(node, body_node)
+    table.insert(new_dirty_nodes, body_node)
+    bodies = cdr(bodies)
+    if bodies == EMPTY_LIST then
+      body_node.set_var = let_ret_sym
+    end
+  end
+
+  local endmemfence_node = new_node("ENDVARFENCE", {}, env)
+  insert_before(node, endmemfence_node)
+
+  node.op = 'SYMBOL'
+  node.args = {let_ret_sym}
+  node.env = env
+end
+
+special_form_compilers["let*"] = function(node, new_dirty_nodes)
+  assert(false)
+end
+
+special_form_compilers["letrec"] = function(node, new_dirty_nodes)
+  assert(false)
+end
+
+-- our letrec is already sequential from left to right, not sure if it is
+-- possible to re-arrange stuff to be faster on a Lua level. Maybe in assembly
+-- or LLVM?
+special_form_compilers["letrec*"] = special_form_compilers["letrec"]
 
 local function compile_lua_primitive(obj)
   if type(obj) == 'string' then
@@ -1108,7 +1205,7 @@ local function transform_to_lua(ir_list)
   local node = ir_list
   while node do
     if node.op == 'DATA' then
-      local data_name = genvar("data")
+      local data_name = tostring(genvar("data"))
       insert('local ')
       insert(data_name)
       insert(' = ')
@@ -1129,7 +1226,11 @@ local function transform_to_lua(ir_list)
     local env = node.env
     local args = node.args
 
-    if op == "ENDFUNC" or op == "ENDIF" or op == "ELSE" then
+    if op == "ENDFUNC" or
+      op == "ENDIF" or
+      op == "ELSE" or
+      op == "ENDVARFENCE"
+      then
       indent = indent - 1
     end
 
@@ -1176,12 +1277,14 @@ local function transform_to_lua(ir_list)
         if i == 1 then
           insert("(")
         elseif i == #args then
-          insert(")")
+          -- consider case of 0 arguments, then it would match above but not
+          -- also here. move outside to fix this.
         else
           insert(", ")
         end
       end
-    elseif op == 'BEGINFUNC' then
+      insert(")")
+    elseif op == 'FUNC' then
       insert("function(")
       local n = #args
       for i = 1, n do
@@ -1207,6 +1310,11 @@ local function transform_to_lua(ir_list)
       insert("else")
       indent = indent + 1
     elseif op == 'ENDIF' then
+      insert("end")
+    elseif op == "VARFENCE" then
+      insert("do")
+      indent = indent + 1
+    elseif op == "ENDVARFENCE" then
       insert("end")
     else
       error("unknown opcode type in Lua generation: " .. op)
