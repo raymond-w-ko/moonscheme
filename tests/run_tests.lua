@@ -56,7 +56,7 @@ local function serialize_check(text)
   -- print(util.show(data))
   local outport = OutputStringPort.new()
   moonscheme.write(data, outport)
-  local serialized_text = outport:get_output_string() 
+  local serialized_text = outport:get_output_string()
   -- print(serialized_text)
   assert(serialized_text == text)
 end
@@ -196,4 +196,26 @@ eval([[
 (let* ((x 1)
        (y 1))
   (foo))
+(letrec ((x 1)
+         (y 1))
+  x)
+(letrec ((x 1)
+         (y 1))
+  (foo x y))
+(letrec ((x 1)
+
+         (y 1))
+  (foo x y))
+;; from page 16 of r7rs.pdf
+(letrec ((p
+           (lambda (x)
+             (+ 1 (q (- x 1)))))
+          (q
+           (lambda (y)
+             (if (zero? y)
+                 0
+                 (+ 1 (p (- y 1))))))
+          (x (p 5))
+          (y x))
+         y)
 ]])

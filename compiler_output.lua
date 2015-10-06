@@ -238,3 +238,70 @@ do
 end
 return __let_ret_31
 ----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __let_ret_32 = nil
+do
+    local x = nil
+    local y = nil
+    x = 1
+    y = 1
+    __let_ret_32 = x
+end
+return __let_ret_32
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __let_ret_33 = nil
+do
+    local x = nil
+    local y = nil
+    x = 1
+    y = 1
+    __let_ret_33 = __MODULE["foo"](x, y)
+end
+return __let_ret_33
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __let_ret_34 = nil
+do
+    local x = nil
+    local y = nil
+    x = 1
+    y = 1
+    __let_ret_34 = __MODULE["foo"](x, y)
+end
+return __let_ret_34
+----------------------------------------
+local __MODULE = require("moonscheme.base")
+local __MOONSCHEME_BASE_MODULE = require("moonscheme.base")
+local __let_ret_35 = nil
+do
+    local p = nil
+    local q = nil
+    local x = nil
+    local y = nil
+    p = function(x)
+        local __call_arg_39 = _G["-"](x, 1)
+        local __call_arg_36 = q(__call_arg_39)
+        return _G["+"](1, __call_arg_36)
+    end
+    q = function(y)
+        local __if_test_37 = _G["zero?"](y)
+        local __if_ret_38 = nil
+        if __if_test_37 ~= false then
+            __if_ret_38 = 0
+        else
+            local __call_arg_41 = _G["-"](y, 1)
+            local __call_arg_40 = p(__call_arg_41)
+            __if_ret_38 = _G["+"](1, __call_arg_40)
+        end
+        return __if_ret_38
+    end
+    x = p(5)
+    y = x
+    __let_ret_35 = y
+end
+return __let_ret_35
+----------------------------------------

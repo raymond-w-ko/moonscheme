@@ -1080,10 +1080,6 @@ special_form_compilers["let"] = function(node, new_dirty_nodes)
   assert(getmetatable(bindings) == Pair,
          "let: bad syntax (bindings not a list)")
 
-  local local_map = {}
-  local new_vars = {}
-  local seen_variables = {}
-
   local env = node.env
 
   local let_ret_sym = genvar("let_ret")
@@ -1094,6 +1090,10 @@ special_form_compilers["let"] = function(node, new_dirty_nodes)
 
   local memfence_node = new_node("VARFENCE", {}, env)
   insert_before(node, memfence_node)
+
+  local local_map = {}
+  local new_vars = {}
+  local seen_variables = {}
 
   while bindings ~= EMPTY_LIST do
     local binding = car(bindings)
@@ -1209,12 +1209,95 @@ special_form_compilers["let*"] = function(node, new_dirty_nodes)
 end
 
 special_form_compilers["letrec"] = function(node, new_dirty_nodes)
-  assert(false)
+  local args = node.args
+  if args == EMPTY_LIST then
+    error("let: bad syntax (missing name or binding pairs)")
+  end
+
+  local bindings = car(args)
+  args = cdr(args)
+  local bodies = args
+
+  if getmetatable(bindings) == Symbol then
+    error("TODO: supported named let")
+  end
+
+  assert(getmetatable(bindings) == Pair,
+         "let: bad syntax (bindings not a list)")
+
+  local env = node.env
+
+  local let_ret_sym = genvar("let_ret")
+  env = env:extend_with({let_ret_sym})
+  local let_ret_node = new_node("PRIMITIVE", {nil}, env)
+  insert_before(node, let_ret_node)
+  let_ret_node.new_local = let_ret_sym
+
+  local memfence_node = new_node("VARFENCE", {}, env)
+  insert_before(node, memfence_node)
+
+  local seen_variables = {}
+  local local_init_list = {}
+
+  while bindings ~= EMPTY_LIST do
+    local binding = car(bindings)
+    assert(getmetatable(binding) == Pair)
+    local variable = car(binding)
+    assert(getmetatable(variable) == Symbol,
+           "let: bad syntax (variable not an identifier)")
+    binding = cdr(binding)
+    local init = car(binding)
+    bindings = cdr(bindings)
+
+    local name = tostring(variable)
+    assert(seen_variables[name] == nil, "let: duplicate identifier: " .. name)
+    seen_variables[name] = true
+
+    table.insert(local_init_list, {variable, init})
+  end
+
+  for i, m in ipairs(local_init_list) do
+    local variable = m[1]
+    local local_node = new_node("PRIMITIVE", {nil}, env)
+    local_node.new_local = variable
+    insert_before(node, local_node)
+    env = env:extend_with({variable})
+    local_node.env = env
+  end
+
+  for i, m in ipairs(local_init_list) do
+    local variable = m[1]
+    local init = m[2]
+    local bind_node = new_node("LISP", {init}, env)
+    insert_before(node, bind_node)
+    bind_node.set_var = variable
+    table.insert(new_dirty_nodes, bind_node)
+  end
+
+  while bodies ~= EMPTY_LIST do
+    local body = car(bodies)
+    local body_node = new_node("LISP", {body}, env)
+    insert_before(node, body_node)
+    table.insert(new_dirty_nodes, body_node)
+    bodies = cdr(bodies)
+    if bodies == EMPTY_LIST then
+      body_node.set_var = let_ret_sym
+    end
+  end
+
+  local endmemfence_node = new_node("ENDVARFENCE", {}, env)
+  insert_before(node, endmemfence_node)
+
+  node.op = 'SYMBOL'
+  node.args = {let_ret_sym}
+  node.env = env
 end
 
--- our letrec is already sequential from left to right, not sure if it is
--- possible to re-arrange stuff to be faster on a Lua level. Maybe in assembly
--- or LLVM?
+-- our letrec already processess sequentially from left to right, not sure if
+-- it is possible to re-arrange stuff to be faster on a Lua level. Maybe in
+-- assembly or LLVM this makes sense?
+--
+-- In Racket, letrec is letrec*, which suggests there is minimal benefit
 special_form_compilers["letrec*"] = special_form_compilers["letrec"]
 
 local function compile_lua_primitive(obj)
