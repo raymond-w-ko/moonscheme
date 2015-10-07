@@ -1,4 +1,4 @@
-local util = require('tests.util')
+local util = require('moonscheme.util')
 local M = {}
 
 -- empty tables for metatable tagging so we can know what Scheme type a table
@@ -45,6 +45,7 @@ function InputStringPort.new(string)
     string = string,
     len = string:len(),
     index = 1,
+    line_number = 1
   }
   return setmetatable(port, InputStringPort)
 end
@@ -62,6 +63,9 @@ function InputStringPort:read_char()
   end
   local next_char = self.string:sub(n, n)
   self.index = n + 1
+  if next_char == "\n" then
+    self.line_number = self.line_number + 1
+  end
   return next_char
 end
 M['InputStringPort'] = InputStringPort
@@ -450,22 +454,34 @@ end
 
 local dispatch_macros = {}
 macros['#'] = function(port, initial_ch)
-  local ch = port:read_char()
-  if ch == 'EOF' then
+  local data = read(port, true)
+  if data == 'EOF' then
     error('EOF while reading character for dispatch macro #')
   end
-  local fn = dispatch_macros[ch]
-  if fn == nil then
-    error('no dispatch macro for: ' .. ch)
+  local mt = getmetatable(data)
+  local macro_name
+  if mt == Symbol then
+    macro_name = tostring(data)
+  else
+    error("unknown dispatch macro type")
   end
-  return fn(port, ch)
+  local fn = dispatch_macros[macro_name]
+  if fn == nil then
+    error('no dispatch macro for: ' .. macro_name)
+  end
+  return fn(port)
 end
 
-dispatch_macros['t'] = function()
-  return true
-end
-dispatch_macros['f'] = function()
-  return false
+dispatch_macros['t'] = function() return true end
+dispatch_macros['true'] = dispatch_macros['t']
+dispatch_macros['f'] = function() return false end
+dispatch_macros['false'] = dispatch_macros['f']
+
+dispatch_macros['lang'] = function(port)
+  local lang = read(port)
+  assert(getmetatable(lang) == Symbol)
+  lang = tostring(lang)
+  assert(lang == "r7rs", "unknown language specified, only r7rs is understood")
 end
 
 -- TODO: handle lists that reference itself via #1=() syntax to prevent an
@@ -566,6 +582,9 @@ local function to_lua_identifier(scheme_identifier)
   end
   return table.concat(buf)
 end
+local function to_lua_module_identifier(module_name)
+  return "__MODULE_" .. to_lua_identifier(module_name)
+end
 
 local _genvar_count = 0
 local function genvar(info)
@@ -583,26 +602,31 @@ local function genvar(info)
 end
 
 local kModuleLocal = '__MODULE'
-local kMoonSchemeLocal = '__MOONSCHEME_BASE_MODULE'
-local current_module_name = "moonscheme.base"
-local current_module = M
-local function GetModule(name)
-  if name == 'moonscheme.base' then
-    return M
-  end
-end
-
 
 -- lexical environment
+
+-- TODO: add name to module map so we can import variables from other modules
+-- and have the table index work
 local Environment = {}
 Environment.__index = Environment
+-- The lowest level is 0, which indicates a top level environment.
+-- Unfortunately, these will slightly be inefficient as the "top level" is a
+-- lua table in "package.loaded".
+--
+-- So variables in the top level are always accessed with a table index. This
+-- is needed to solve the problem of not having C++ style references which
+-- means two variables names point to the same object / memory region.
+--
+-- All symbol access at level >= 1 are efficient because they are just locals
+-- or function arguments.
 function Environment.new(level)
-  assert(type(level) == 'number')
+  assert(type(level) == 'number' and level >= 0)
 
-  local t = {}
-  t.symbols = {}
-  t.level = level
-  return setmetatable(t, Environment)
+  local env = {}
+  env.symbols = {}
+  env.module_name_of_symbol = {}
+  env.level = level
+  return setmetatable(env, Environment)
 end
 function Environment:extend_with(symbols)
   local newenv = Environment.new(self.level + 1)
@@ -614,6 +638,10 @@ function Environment:extend_with(symbols)
   end
   return newenv
 end
+-- This is mainly used in (define) and does a deep copy. Not sure if totally
+-- correct, or if modules are suppose to be in a (letrec) fashion. How can it
+-- be split in multiple files if it is in a (letrec) fasion? need to find out
+-- one day if this is true or false.
 function Environment:add_symbols_to_same_level(symbols)
   local newenv = Environment.new(self.level)
   newenv.parent = self.parent
@@ -621,6 +649,10 @@ function Environment:add_symbols_to_same_level(symbols)
   for symbol_name, v in pairs(self.symbols) do
     newenv.symbols[symbol_name] = true
   end
+  for symbol_name, module_name in pairs(self.module_name_of_symbol) do
+    newenv.module_name_of_symbol[symbol_name] = module_name
+  end
+
   for i = 1, #symbols do
     local symbol = symbols[i]
     assert(getmetatable(symbol) == Symbol)
@@ -631,36 +663,68 @@ function Environment:add_symbols_to_same_level(symbols)
   end
   return newenv
 end
+-- there is no environment above this one, except _G, the Lua globals table.
+-- Not esure how to handle this. Should symbols be brought in explicitly or
+-- implicitly.
 function Environment:is_top_level()
   return self.parent == nil
 end
-function Environment:has_symbol(symbol)
+-- returns
+-- (level of symbol or nil if not found, module name symbol belongs to)
+-- module name only makes sense if the level of environment is 0
+function Environment:get_symbol_level_and_module(symbol)
   assert(getmetatable(symbol) == Symbol)
-  if self.symbols[tostring(symbol)] then
-    return self.level
+  local name = tostring(symbol)
+  if self.symbols[name] then
+    local module_name = self.module_name_of_symbol[name]
+    return self.level, module_name
   end
 
   if self.parent then
-    return self.parent:has_symbol(symbol)
+    local level, module_name = self.parent:get_symbol_level_and_module(symbol)
+    return level, module_name
   else
     return nil
   end
 end
-function Environment:mangle_symbol(symbol)
+function Environment:add_external_symbol(symbol, module_name)
+  assert(self.level == 0, "external symbols may only be added to the top level")
   assert(getmetatable(symbol) == Symbol)
+  local name = tostring(symbol)
+  assert(self.symbols[name] == nil, "symbol already defined: " .. name)
+  self.symbols[name] = true
+  self.module_name_of_symbol[name] = module_name
+end
+-- The magic function to compile down the symbol to Lua code
+function Environment:mangle_symbol(symbol, used_module_names)
+  assert(getmetatable(symbol) == Symbol)
+  assert(used_module_names)
+
   local name = tostring(symbol)
   if name == "..." or name == "nil" then
     return name
   end
 
-  local buf = {nil, nil, nil}; local nextslot = 1
+  local buf = {nil, nil, nil, nil}; local nextslot = 1
 
-  local symbol_level = self:has_symbol(symbol)
+  local symbol_level, module_name = self:get_symbol_level_and_module(symbol)
+  -- local info = string.format("symbol: %s, level: %d, module: %s",
+  --                            name, symbol_level, module_name)
+  -- print(info)
 
   if symbol_level == nil then
-    buf[nextslot] = '_G["'; nextslot = nextslot + 1
+    error("unbound symbol in module: " .. name)
+    -- to dangerous for dev right now, maybe later in production
+    -- buf[nextslot] = '_G["'; nextslot = nextslot + 1
   elseif symbol_level == 0 then
-    buf[nextslot] = kModuleLocal; nextslot = nextslot + 1
+    local table_name
+    if module_name then
+      table_name = to_lua_module_identifier(module_name)
+      used_module_names[module_name] = true
+    else
+      table_name = kModuleLocal
+    end
+    buf[nextslot] = table_name; nextslot = nextslot + 1
     buf[nextslot] = '["'; nextslot = nextslot + 1
   end
 
@@ -732,9 +796,8 @@ end
 local ir_compilers = {}
 
 -- list to IR code
-local function transform_to_ir_list(expr)
-  local base_env = Environment.new(0)
-  base_env.symbols = current_module
+local function transform_to_ir_list(expr, module)
+  local base_env = module["*ENVIRONMENT*"]
   local ir_list = new_node('LISP', {expr}, base_env)
   ir_list.ret = true
   local dirty_nodes = {ir_list}
@@ -900,7 +963,11 @@ special_form_compilers['define'] = function(node, new_dirty_nodes)
     error("define: bad syntax (unknown first argument type)")
   end
 
-  orignode.env = orignode.env:add_symbols_to_same_level({variable_symbol})
+  local env = node.env
+  local defsym_node = new_node("DEFSYM", {variable_symbol}, env)
+  insert_before(orignode, defsym_node)
+
+  orignode.env = env
   orignode.op = 'SYMBOL'
   orignode.args = {variable_symbol}
 end
@@ -1324,32 +1391,38 @@ local function is_rvalue(node)
   return false
 end
 
-local function transform_to_lua(ir_list)
+local function transform_to_lua(ir_list, module)
+  local current_module_name = module["*MODULE-NAME*"]
+  local used_module_names = {}
+
   local indent = 0
   local lua_code = {}
+  local lua_header_code = {}
   local function insert(text)
     table.insert(lua_code, text)
   end
+  local function insert_header(text)
+    table.insert(lua_header_code, text)
+  end
 
-  insert('local ')
-  insert(kModuleLocal)
-  insert(' = require(')
-  insert(string.format("%q", current_module_name))
-  insert(')\n')
-
-  insert('local ')
-  insert(kMoonSchemeLocal)
-  insert(' = require("moonscheme.base")\n')
+  insert_header('do -- chunk start\n')
+  insert_header('local ')
+  insert_header(kModuleLocal)
+  insert_header(' = package.loaded[')
+  insert_header(string.format("%q", current_module_name))
+  insert_header(']\n')
 
   -- anchor data to the beginning of the source code
   local node = ir_list
   while node do
     if node.op == 'DATA' then
+      used_module_names["moonscheme.base"] = true
+
       local data_name = tostring(genvar("data"))
       insert('local ')
       insert(data_name)
       insert(' = ')
-      insert(kMoonSchemeLocal)
+      insert(to_lua_module_identifier("moonscheme.base"))
       insert('.read(')
       insert(string.format("%q", node.args[1]))
       insert(')')
@@ -1381,11 +1454,11 @@ local function transform_to_lua(ir_list)
     if node.new_local then
       assert(getmetatable(node.new_local) == Symbol)
       insert("local ")
-      insert(env:mangle_symbol(node.new_local))
+      insert(env:mangle_symbol(node.new_local, used_module_names))
       insert(" = ")
     elseif node.set_var then
       assert(getmetatable(node.set_var) == Symbol)
-      insert(env:mangle_symbol(node.set_var))
+      insert(env:mangle_symbol(node.set_var, used_module_names))
       insert(" = ")
     elseif node.ret then
       insert("return ")
@@ -1399,7 +1472,7 @@ local function transform_to_lua(ir_list)
     elseif op == 'SYMBOL' then
       if is_rvalue(node) then
         local symbol = node.args[1]
-        insert(env:mangle_symbol(symbol))
+        insert(env:mangle_symbol(symbol, used_module_names))
       end
     elseif op == 'DATA'then
       if is_rvalue(node) then
@@ -1409,7 +1482,7 @@ local function transform_to_lua(ir_list)
       for i = 1, #args do
         local arg = args[i]
         if getmetatable(arg) == Symbol then
-          insert(env:mangle_symbol(arg))
+          insert(env:mangle_symbol(arg, used_module_names))
         else
           insert(compile_lua_primitive(arg))
         end
@@ -1429,7 +1502,7 @@ local function transform_to_lua(ir_list)
       local n = #args
       for i = 1, n do
         local symbol = args[i]
-        insert(env:mangle_symbol(symbol))
+        insert(env:mangle_symbol(symbol, used_module_names))
         if i ~= n then
           insert(", ")
         end
@@ -1437,13 +1510,14 @@ local function transform_to_lua(ir_list)
       insert(")")
       indent = indent + 1
     elseif op == 'PACKARGS' then
-      insert(kMoonSchemeLocal)
-      insert(".to_scheme_list(table.pack(...))")
+      used_module_names["moonscheme.base"] = true
+      insert(to_lua_module_identifier("moonscheme.base"))
+      insert('.to_scheme_list(table.pack(...))')
     elseif op == 'ENDFUNC' then
       insert("end")
     elseif op == 'IF' then
       insert("if ")
-      insert(env:mangle_symbol(args[1]))
+      insert(env:mangle_symbol(args[1], used_module_names))
       insert(" ~= false then")
       indent = indent + 1
     elseif op == 'ELSE' then
@@ -1456,6 +1530,12 @@ local function transform_to_lua(ir_list)
       indent = indent + 1
     elseif op == "ENDVARFENCE" then
       insert("end")
+    elseif op == "DEFSYM" then
+      insert(kModuleLocal)
+      insert('["*ENVIRONMENT*"].symbols')
+      insert('[')
+      insert(string.format("%q", tostring(args[1])))
+      insert('] = true')
     else
       error("unknown opcode type in Lua generation: " .. op)
     end
@@ -1463,24 +1543,33 @@ local function transform_to_lua(ir_list)
     node = node.next
   end
 
+  for module_name, _ in pairs(used_module_names) do
+    insert_header('local ')
+    insert_header(to_lua_module_identifier(module_name))
+    insert_header(' = package.loaded["')
+    insert_header(module_name)
+    insert_header('"]\n')
+  end
+
+  insert("end -- chunk END\n")
   insert("----------------------------------------\n")
 
-  return table.concat(lua_code)
+  return table.concat(lua_header_code) ..table.concat(lua_code)
 end
 
-local function compile(expr)
-  local ir_list = transform_to_ir_list(expr)
-  local lua_code = transform_to_lua(ir_list)
+local function compile(expr, module)
+  local ir_list = transform_to_ir_list(expr, module)
+  local lua_code = transform_to_lua(ir_list, module)
   return lua_code
 end
 
 local out = io.open('compiler_output.lua', 'wb')
-
 local kDefineSymbol = Symbol.new("define")
-local function eval(expr)
-  local lua_code = compile(expr)
+local function eval(expr, module)
+  local lua_code = compile(expr, module)
 
   -- extract defines to give functions names
+  local current_module_name = module["*MODULE-NAME*"]
   local description
   if getmetatable(expr) == Pair then
     local arg0 = car(expr)
@@ -1509,5 +1598,107 @@ local function eval(expr)
   return fn()
 end
 M.eval = eval
+
+local function require(module_name)
+  if package.loaded[module_name] then
+    return package.loaded[module_name]
+  end
+
+  local paths = util.split(package.path, ";")
+  local file
+  local attempted_paths = {}
+  for i, path in ipairs(paths) do
+    path = path:gsub(".lua$", ".scm")
+    path = path:gsub("%?", module_name:gsub("%.", "/"))
+    table.insert(attempted_paths, "\t" .. path)
+    local f, err = io.open(path, 'rb')
+    if f then
+      file = f
+      break
+    end
+  end
+  if file == nil then
+    local msg = "module '" .. module_name .. "' not found at any of following locations:\n"
+    msg = msg .. table.concat(attempted_paths, "\n")
+    error(msg)
+  end
+
+  local source_code = file:read("*all")
+
+  local env = Environment.new(0)
+  for k, v in pairs(M) do
+    -- TODO proper environment table for moonscheme.base
+    env:add_external_symbol(Symbol.new(k), "moonscheme.base")
+  end
+  local module = {
+    ["*MODULE-NAME*"] = module_name,
+    ["*ENVIRONMENT*"] = env
+  }
+  package.loaded[module_name] = module
+
+  local port = InputStringPort.new(source_code)
+  local expr_or_def = M.read(port)
+  while expr_or_def ~= M.EOF do
+    local function safe_eval()
+      return M.eval(expr_or_def, module)
+    end
+    local function on_err(err)
+      return err .. "\n" .. debug.traceback()
+    end
+    local status, ret_or_error = xpcall(safe_eval, on_err)
+    if status then
+      -- TODO: remove this debugging
+      M.write(ret_or_error, M.stdout_port)
+      print()
+
+      expr_or_def = M.read(port)
+    else
+      print(ret_or_error)
+      local string_port = OutputStringPort.new()
+      M.write(expr_or_def, string_port)
+      print("moonscheme info:")
+      print("\twhile reading: " .. string_port:get_output_string())
+      print("\tnear line number: " .. tostring(port.line_number))
+      return
+    end
+  end
+  print("\n----------------------------------------")
+end
+M["require"] = require
+
+M["assert"] = _G["assert"]
+
+--------------------------------------------------------------------------------
+-- inefficient, needs to be a special form eventually
+--------------------------------------------------------------------------------
+M["+"] = function(...)
+  local sum = 0
+  local t = table.pack(...)
+  for i = 1, t.n do
+    sum = sum + t[i]
+  end
+  return sum
+end
+
+M["-"] = function(...)
+  local sum = 0
+  local t = table.pack(...)
+  if t.n < 1 then
+    error("arity mismatch")
+  elseif t.n == 1 then
+    return -t[1]
+  else
+    sum = t[1]
+  end
+
+  for i = 2, t.n do
+    sum = sum - t[i]
+  end
+  return sum
+end
+
+M["zero?"] = function(n)
+  return n == 0
+end
 
 return M

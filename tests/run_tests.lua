@@ -1,6 +1,6 @@
 package.path = './?.lua;./?/init.lua'
 require('tests.strict')
-local util = require('tests.util')
+local util = require('moonscheme.util')
 
 local moonscheme = require('moonscheme')
 local InputStringPort = moonscheme.InputStringPort
@@ -99,123 +99,10 @@ local function eval(text)
     local ret = moonscheme.eval(data)
     local out_port = moonscheme.stdout_port
     moonscheme.write(ret, out_port)
-    print("\n----------------------------------------")
+    print("")
     data = moonscheme.read(port)
   end
+  print("\n----------------------------------------")
 end
 
--- eval of empty list is an error
--- eval([[()]])
-
--- (define) wrong arity (!= 2)
--- eval([[(define)]])
--- eval([[(define x)]])
--- eval([[(define x 1 2)]])
-
--- (define) on existing top-level symbol, duplicated
--- eval([[(define car 1234)]])
-
-eval([[(define x 1)]])
--- eval([[(define y math)]])
-eval([[(define z "foobar")]])
-eval([[(define a car)]])
--- eval([[(quote)]])
--- eval([[(quote 1 2)]])
-eval([[(car '(42 84 168))]])
-
--- eval([[(lambda)]])
--- eval([[(lambda 42 42)]])
--- eval([[(lambda (x y z))]])
--- eval([[(lambda (x y z . w))]])
-
-eval([[(lambda () 42)]])
-eval([[(lambda (x) (car x))]])
-eval([[(lambda (x y z) (car y))]])
-eval([[
-(lambda (x y z . w)
-  (write x)
-  (write w))]])
--- eval([[(lambda packed)]])
-
-
-eval([[
-(define (foo x y)
-  42)
-(define (bar x)
-  (assert #f))
-(define (quux)
-  (assert #f))
-(define (colbert . stewart)
-  (write stewart))
-(define (test1 arg0 arg1 . stewart)
-  (write stewart)
-  (test1 (car stewart)))
-;(bar 1)
-(colbert 1 2 3)
-]])
-eval([[
-; (if)
-; (if #t)
-(if #t
-  1)
-(if #f
-  1)
-(if #t
-  1
-  2)
-(if #f
-  1
-  2)
-(if nil
-  "yes, nil is true!"
-  2)
-((lambda (x)
-   (if nil
-     "yes, nil is true!"
-     2)
-   (if #f
-     "yes, nil is true!"
-     2)) 5)
-(if #t
-  (if #t 1 2)
-  (if #f 3 4))
-]])
-eval([[
-;(let foo ((x 1)
-;      (y 1))
-;  (foo))
-(let ((x 1)
-      (y 1))
-  x)
-(let ((x 1)
-      (y 1))
-  (foo))
-(let* ((x 1)
-       (y 1))
-  x)
-(let* ((x 1)
-       (y 1))
-  (foo))
-(letrec ((x 1)
-         (y 1))
-  x)
-(letrec ((x 1)
-         (y 1))
-  (foo x y))
-(letrec ((x 1)
-
-         (y 1))
-  (foo x y))
-;; from page 16 of r7rs.pdf
-(letrec ((p
-           (lambda (x)
-             (+ 1 (q (- x 1)))))
-          (q
-           (lambda (y)
-             (if (zero? y)
-                 0
-                 (+ 1 (p (- y 1))))))
-          (x (p 5))
-          (y x))
-         y)
-]])
+moonscheme.require("tests.test0")
