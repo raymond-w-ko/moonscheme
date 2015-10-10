@@ -821,6 +821,32 @@ local function transform_to_ir_list(expr, module)
   return ir_list
 end
 
+-- begin_node is usually the the function header or the last let binding,
+-- basically the node before the bodies start end_node is usually the form's
+-- args is a pair list
+-- return value
+-- TODO: the body of a lambda has to be a (letrec*) in case of (define)s
+-- inside, right now this is just a (let*)
+local function expand_bodies(form_name,
+                             begin_node, end_node, bodies, new_dirty_nodes)
+  assert(begin_node)
+  assert(end_node)
+
+  if bodies == EMPTY_LIST then
+    error(form_name .. ": bad syntax (missing body expressions)")
+  end
+
+  local env = begin_node.env
+
+  bodies = to_lua_array(bodies)
+  local n = #bodies
+  for i = 1, n do
+    local body_node = new_node('LISP', {bodies[i]}, env)
+    table.insert(new_dirty_nodes, body_node)
+    insert_before(end_node, body_node)
+  end
+end
+
 local special_form_compilers = {}
 
 ir_compilers['LISP'] = function(node, new_dirty_nodes)
@@ -1030,29 +1056,14 @@ special_form_compilers["lambda"] = function(node, new_dirty_nodes)
     insert_after(node, pack_args_node)
     node = pack_args_node
   end
-  local func_env = node.env:extend_with(func_args)
 
-  -- TODO: the body of a lambda has to be a (letrec*) in case of (define)s
-  -- inside, right now this is just a (let*)
-  local proc_bodies = cdr(args)
-  if proc_bodies == EMPTY_LIST then
-    error("lambda: bad syntax (missing body expressions)")
-  end
-  proc_bodies = to_lua_array(proc_bodies)
-  local n = #proc_bodies
-  for i = 1, n do
-    local body_node = new_node('LISP', {proc_bodies[i]}, func_env)
-    table.insert(new_dirty_nodes, body_node)
-    if i == n then
-      body_node.ret = true
-    end
-    insert_after(node, body_node)
-    node = body_node
-  end
-
-  local endfunc_node = new_node("ENDFUNC", {}, func_env)
+  local endfunc_node = new_node("ENDFUNC", {}, node.env)
   insert_after(node, endfunc_node)
   node = endfunc_node
+
+  expand_bodies("lambda", node, endfunc_node, cdr(args), new_dirty_nodes)
+
+  endfunc_node.prev.ret = true
 end
 
 special_form_compilers["quote"] = function(node, new_dirty_nodes)
@@ -1229,7 +1240,7 @@ special_form_compilers["let*"] = function(node, new_dirty_nodes)
 
   local env = node.env
 
-  local let_ret_sym = genvar("let_ret")
+  local let_ret_sym = genvar("let_star_ret")
   env = env:extend_with({let_ret_sym})
   local let_ret_node = new_node("PRIMITIVE", {nil}, env)
   insert_before(node, let_ret_node)
@@ -1294,7 +1305,7 @@ special_form_compilers["letrec"] = function(node, new_dirty_nodes)
 
   local env = node.env
 
-  local let_ret_sym = genvar("let_ret")
+  local let_ret_sym = genvar("letrec_ret")
   env = env:extend_with({let_ret_sym})
   local let_ret_node = new_node("PRIMITIVE", {nil}, env)
   insert_before(node, let_ret_node)

@@ -265,69 +265,69 @@ end -- chunk END
 ----------------------------------------
 do -- chunk start
 local __MODULE = package.loaded["tests.test0"]
-local __let_ret_30 = nil
+local __let_star_ret_30 = nil
 do
     local x = 1
     local y = 1
-    __let_ret_30 = x
+    __let_star_ret_30 = x
 end
-return __let_ret_30
+return __let_star_ret_30
 end -- chunk END
 ----------------------------------------
 do -- chunk start
 local __MODULE = package.loaded["tests.test0"]
-local __let_ret_31 = nil
+local __let_star_ret_31 = nil
 do
     local x = 1
     local y = 1
-    __let_ret_31 = __MODULE["foo"]()
+    __let_star_ret_31 = __MODULE["foo"]()
 end
-return __let_ret_31
+return __let_star_ret_31
 end -- chunk END
 ----------------------------------------
 do -- chunk start
 local __MODULE = package.loaded["tests.test0"]
-local __let_ret_32 = nil
+local __letrec_ret_32 = nil
 do
     local x = nil
     local y = nil
     x = 1
     y = 1
-    __let_ret_32 = x
+    __letrec_ret_32 = x
 end
-return __let_ret_32
+return __letrec_ret_32
 end -- chunk END
 ----------------------------------------
 do -- chunk start
 local __MODULE = package.loaded["tests.test0"]
-local __let_ret_33 = nil
+local __letrec_ret_33 = nil
 do
     local x = nil
     local y = nil
     x = 1
     y = 1
-    __let_ret_33 = __MODULE["foo"](x, y)
+    __letrec_ret_33 = __MODULE["foo"](x, y)
 end
-return __let_ret_33
+return __letrec_ret_33
 end -- chunk END
 ----------------------------------------
 do -- chunk start
 local __MODULE = package.loaded["tests.test0"]
-local __let_ret_34 = nil
+local __letrec_ret_34 = nil
 do
     local x = nil
     local y = nil
     x = 1
     y = 1
-    __let_ret_34 = __MODULE["foo"](x, y)
+    __letrec_ret_34 = __MODULE["foo"](x, y)
 end
-return __let_ret_34
+return __letrec_ret_34
 end -- chunk END
 ----------------------------------------
 do -- chunk start
 local __MODULE = package.loaded["tests.test0"]
 local __MODULE_moonscheme_DOT_base = package.loaded["moonscheme.base"]
-local __let_ret_35 = nil
+local __letrec_ret_35 = nil
 do
     local p = nil
     local q = nil
@@ -352,8 +352,8 @@ do
     end
     x = p(5)
     y = x
-    __let_ret_35 = y
+    __letrec_ret_35 = y
 end
-return __let_ret_35
+return __letrec_ret_35
 end -- chunk END
 ----------------------------------------
