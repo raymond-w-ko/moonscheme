@@ -29,6 +29,11 @@ end
 M.Symbol = Symbol
 
 local kDotSymbol = Symbol.new('.')
+local kQuoteSymbol = Symbol.new('quote')
+local kTripDotSymbol = Symbol.new("...")
+local kDefineSymbol = Symbol.new("define")
+local kSetSybmol = Symbol.new("set!")
+local kLambdaSymbol = Symbol.new("lambda")
 
 --------------------------------------------------------------------------------
 -- ports
@@ -309,6 +314,7 @@ local function interpret_identifier(identifier)
   return Symbol.new(identifier)
 end
 
+-- TODO: handle reading self-referential lists
 local function read(port, is_recursive)
   -- lazy hack since I don't feel like over complicating generated source code
   if type(port) == 'string' then
@@ -371,7 +377,7 @@ macros['"'] = function(port, initch)
   return read_stringish(port, initch, '"')
 end
 
--- TODO: properly write with strings unicode character escapes?
+-- TODO: properly write strings with unicode using \x escapes
 local function write_quoted_string(string, port)
   port:write_string('"')
 
@@ -438,7 +444,6 @@ macros['('] = function(port, initial_ch)
   return list
 end
 
-local kQuoteSymbol = Symbol.new('quote')
 macros["'"] = function(port, initial_ch)
   local list = cons(kQuoteSymbol, EMPTY_LIST)
   set_cdr(list, cons(read(port, true), EMPTY_LIST))
@@ -605,8 +610,6 @@ local kModuleLocal = '__MODULE'
 
 -- lexical environment
 
--- TODO: add name to module map so we can import variables from other modules
--- and have the table index work
 local Environment = {}
 Environment.__index = Environment
 -- The lowest level is 0, which indicates a top level environment.
@@ -743,6 +746,32 @@ function Environment:mangle_symbol(symbol, used_module_names)
   return table.concat(buf)
 end
 
+function Environment:__tostring()
+  local text = {}
+  self:_debug(text)
+  return table.concat(text)
+end
+function Environment:_debug(text)
+  table.insert(text, "(")
+  for k, v in pairs(self.symbols) do
+    if self.level == 0 and M[k] then
+      -- skip core scheme function to help cut spam
+    else
+      table.insert(text, k)
+      table.insert(text, " ")
+    end
+  end
+  -- remove trailing space
+  if text[#text] ~= "(" then
+    table.remove(text)
+  end
+  table.insert(text, ") ")
+
+  if self.parent then
+    self.parent:_debug(text)
+  end
+end
+
 local function IsLuaPrimitive(obj)
   local type = type(obj)
   return (
@@ -807,7 +836,7 @@ local function transform_to_ir_list(expr, module)
     for i = 1, #dirty_nodes do
       local node = dirty_nodes[i]
       local compiler = ir_compilers[node.op]
-      assert(compiler, 'missing compiler for IR op: ' .. node.op)
+      assert(compiler, 'missing compiler for IR op: ' .. tostring(node.op))
       compiler(node, new_dirty_nodes)
     end
     dirty_nodes = new_dirty_nodes
@@ -824,9 +853,8 @@ end
 -- begin_node is usually the the function header or the last let binding,
 -- basically the node before the bodies start end_node is usually the form's
 -- args is a pair list
--- return value
--- TODO: the body of a lambda has to be a (letrec*) in case of (define)s
--- inside, right now this is just a (let*)
+-- REMEMBER to do any end_node.prev.set_var or end_node.prev.ret AFTER this
+-- funciton returns, as this function can't possible now what you mean
 local function expand_bodies(form_name,
                              begin_node, end_node, bodies, new_dirty_nodes)
   assert(begin_node)
@@ -836,11 +864,64 @@ local function expand_bodies(form_name,
     error(form_name .. ": bad syntax (missing body expressions)")
   end
 
-  local env = begin_node.env
-
   bodies = to_lua_array(bodies)
-  local n = #bodies
-  for i = 1, n do
+
+  local new_defs = {}
+  local seen_defs = {}
+  for i = 1, #bodies do
+    local expr = bodies[i]
+    local mt = getmetatable(expr)
+    if mt == Pair then
+      local operator = car(expr)
+      if operator == kDefineSymbol then
+        -- not sure of a better way to this than to just make it a set?
+        set_car(expr, kSetSybmol)
+        expr = cdr(expr)
+        if expr == EMPTY_LIST then
+          error("define: has no parameters (inside a body)")
+        end
+        local variable = car(expr)
+        local mt = getmetatable(variable)
+        if mt == Symbol then
+          local name = tostring(variable)
+          if seen_defs[name] then
+            error("define: duplicate identifier in body: " .. name)
+          end
+          seen_defs[name] = true
+          table.insert(new_defs, variable)
+        elseif mt == Pair then
+          -- rewrite to (set! identifier (lambda ()))
+          local proc_name = car(variable)
+          local name = tostring(proc_name)
+          if seen_defs[name] then
+            error("define: duplicate identifier in body: " .. name)
+          end
+          seen_defs[name] = true
+          set_car(expr, proc_name)
+          local proc_args = cdr(variable)
+          local proc_bodies = cdr(expr)
+          set_cdr(expr,
+                  cons(cons(kLambdaSymbol,
+                            cons(proc_args, proc_bodies)),
+                       EMPTY_LIST))
+          table.insert(new_defs, proc_name)
+        else
+          error("define: first argument not a symbol or pair")
+        end
+      end
+    end
+  end
+
+  local env = begin_node.env:extend_with(new_defs)
+
+  for i = 1, #new_defs do
+    local var_node = new_node("PRIMITIVE", {nil}, env)
+    local symbol = new_defs[i]
+    var_node.new_local = symbol
+    insert_before(end_node, var_node)
+  end
+
+  for i = 1, #bodies do
     local body_node = new_node('LISP', {bodies[i]}, env)
     table.insert(new_dirty_nodes, body_node)
     insert_before(end_node, body_node)
@@ -944,7 +1025,7 @@ special_form_compilers['define'] = function(node, new_dirty_nodes)
   local mt = getmetatable(variable)
   if mt == Symbol then
     -- 1. define a new variable equal to the second argument
-    if #args <= 0 then
+    if #args <= 1 then
       error("define: bad syntax (missing expression after identifier)")
     elseif #args >= 3 then
       error("define: bad syntax, (multiple expressions after identifier)")
@@ -998,7 +1079,32 @@ special_form_compilers['define'] = function(node, new_dirty_nodes)
   orignode.args = {variable_symbol}
 end
 
-local kTripDotSymbol = Symbol.new("...")
+special_form_compilers["set!"] = function(node, new_dirty_nodes)
+  local args = to_lua_array(node.args)
+  if #args < 1 then
+    error("set!: bad syntax (called with no arguments)")
+  end
+
+  local variable = args[1]
+  -- deduce variable type, of which there can be 3 possibilities
+  if #args <= 1 then
+    error("set!: bad syntax (missing expression after identifier)")
+  elseif #args >= 3 then
+    error("set!: bad syntax, (multiple expressions after identifier)")
+  end
+  local expr = args[2]
+  if IsLuaPrimitive(expr) then
+    node.op = 'PRIMITIVE'
+    node.args = {expr}
+  else
+    node.op = 'LISP'
+    node.args = {expr}
+    table.insert(new_dirty_nodes, node)
+  end
+
+  node.set_var = variable
+end
+
 
 special_form_compilers["lambda"] = function(node, new_dirty_nodes)
   local args = node.args
@@ -1199,26 +1305,22 @@ special_form_compilers["let"] = function(node, new_dirty_nodes)
     table.insert(new_vars, variable)
   end
 
+  local body_begin_node
   env = env:extend_with(new_vars)
   for i, m in ipairs(local_map) do
     local local_assign_node = new_node('SYMBOL', {m[2]}, env)
     local_assign_node.new_local = m[1]
     insert_before(node, local_assign_node)
+    body_begin_node = local_assign_node
   end
 
-  while bodies ~= EMPTY_LIST do
-    local body = car(bodies)
-    local body_node = new_node("LISP", {body}, env)
-    insert_before(node, body_node)
-    table.insert(new_dirty_nodes, body_node)
-    bodies = cdr(bodies)
-    if bodies == EMPTY_LIST then
-      body_node.set_var = let_ret_sym
-    end
-  end
 
   local endmemfence_node = new_node("ENDVARFENCE", {}, env)
   insert_before(node, endmemfence_node)
+
+  expand_bodies("let",
+                body_begin_node, endmemfence_node, bodies, new_dirty_nodes)
+  endmemfence_node.prev.set_var = let_ret_sym
 
   node.op = 'SYMBOL'
   node.args = {let_ret_sym}
@@ -1249,6 +1351,7 @@ special_form_compilers["let*"] = function(node, new_dirty_nodes)
   local memfence_node = new_node("VARFENCE", {}, env)
   insert_before(node, memfence_node)
 
+  local body_begin_node
   while bindings ~= EMPTY_LIST do
     local binding = car(bindings)
     assert(getmetatable(binding) == Pair)
@@ -1265,21 +1368,15 @@ special_form_compilers["let*"] = function(node, new_dirty_nodes)
     table.insert(new_dirty_nodes, binding_node)
     env = env:extend_with({variable})
     binding_node.env = env
-  end
-
-  while bodies ~= EMPTY_LIST do
-    local body = car(bodies)
-    local body_node = new_node("LISP", {body}, env)
-    insert_before(node, body_node)
-    table.insert(new_dirty_nodes, body_node)
-    bodies = cdr(bodies)
-    if bodies == EMPTY_LIST then
-      body_node.set_var = let_ret_sym
-    end
+    body_begin_node = binding_node
   end
 
   local endmemfence_node = new_node("ENDVARFENCE", {}, env)
   insert_before(node, endmemfence_node)
+
+  expand_bodies("let*",
+                body_begin_node, endmemfence_node, bodies, new_dirty_nodes)
+  endmemfence_node.prev.set_var = let_ret_sym
 
   node.op = 'SYMBOL'
   node.args = {let_ret_sym}
@@ -1295,10 +1392,6 @@ special_form_compilers["letrec"] = function(node, new_dirty_nodes)
   local bindings = car(args)
   args = cdr(args)
   local bodies = args
-
-  if getmetatable(bindings) == Symbol then
-    error("TODO: supported named let")
-  end
 
   assert(getmetatable(bindings) == Pair,
          "let: bad syntax (bindings not a list)")
@@ -1343,6 +1436,7 @@ special_form_compilers["letrec"] = function(node, new_dirty_nodes)
     local_node.env = env
   end
 
+  local body_begin_node
   for i, m in ipairs(local_init_list) do
     local variable = m[1]
     local init = m[2]
@@ -1350,21 +1444,15 @@ special_form_compilers["letrec"] = function(node, new_dirty_nodes)
     insert_before(node, bind_node)
     bind_node.set_var = variable
     table.insert(new_dirty_nodes, bind_node)
-  end
-
-  while bodies ~= EMPTY_LIST do
-    local body = car(bodies)
-    local body_node = new_node("LISP", {body}, env)
-    insert_before(node, body_node)
-    table.insert(new_dirty_nodes, body_node)
-    bodies = cdr(bodies)
-    if bodies == EMPTY_LIST then
-      body_node.set_var = let_ret_sym
-    end
+    body_begin_node = bind_node
   end
 
   local endmemfence_node = new_node("ENDVARFENCE", {}, env)
   insert_before(node, endmemfence_node)
+
+  expand_bodies("letrec",
+                body_begin_node, endmemfence_node, bodies, new_dirty_nodes)
+  endmemfence_node.prev.set_var = let_ret_sym
 
   node.op = 'SYMBOL'
   node.args = {let_ret_sym}
@@ -1392,6 +1480,50 @@ local function compile_lua_primitive(obj)
   else
     assert(false)
   end
+end
+
+--------------------------------------------------------------------------------
+-- IR debug
+--------------------------------------------------------------------------------
+local function dump_ir(node, out)
+  local text = {}
+  while node do
+    table.insert(text, "-- ")
+
+    if node.set_var then
+      table.insert(text, tostring(node.set_var))
+      table.insert(text, " = ")
+    end
+    if node.new_local then
+      table.insert(text, "LOCAL ")
+      table.insert(text, tostring(node.new_local))
+      table.insert(text, " = ")
+    end
+    if node.ret then
+      table.insert(text, "RET ")
+    end
+
+    local op = node.op
+    table.insert(text, op)
+    table.insert(text, " ")
+    local args = node.args
+
+    for i, v in ipairs(args) do
+      local port = OutputStringPort.new()
+      M.write(args[i], port)
+      table.insert(text, port:get_output_string())
+      table.insert(text, " ")
+    end
+    if #args == 0 then
+      table.insert(text, "nil ")
+    end
+
+    table.insert(text, tostring(node.env))
+
+    table.insert(text, "\n")
+    node = node.next
+  end
+  out:write(table.concat(text))
 end
 
 -- Lua does not allow standalone values that aren't being bound to anything
@@ -1568,14 +1700,15 @@ local function transform_to_lua(ir_list, module)
   return table.concat(lua_header_code) ..table.concat(lua_code)
 end
 
+local out = io.open('compiler_output.lua', 'wb')
+
 local function compile(expr, module)
   local ir_list = transform_to_ir_list(expr, module)
+  dump_ir(ir_list, out)
   local lua_code = transform_to_lua(ir_list, module)
   return lua_code
 end
 
-local out = io.open('compiler_output.lua', 'wb')
-local kDefineSymbol = Symbol.new("define")
 local function eval(expr, module)
   local lua_code = compile(expr, module)
 
